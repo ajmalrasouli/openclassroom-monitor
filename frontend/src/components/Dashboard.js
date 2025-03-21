@@ -4,6 +4,7 @@ import {
   Grid,
   Card,
   CardContent,
+  CardMedia,
   Typography,
   AppBar,
   Toolbar,
@@ -11,15 +12,19 @@ import {
   Button,
   Dialog,
   TextField,
-  List,
-  ListItem,
-  ListItemText,
+  Chip,
+  Stack,
+  Tooltip
 } from '@mui/material';
 import {
   Block,
   Message,
   Refresh,
   Settings,
+  Computer,
+  CheckCircle,
+  Warning,
+  Fullscreen
 } from '@mui/icons-material';
 
 const Dashboard = () => {
@@ -28,10 +33,11 @@ const Dashboard = () => {
   const [messageDialogOpen, setMessageDialogOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [message, setMessage] = useState('');
+  const [fullscreenView, setFullscreenView] = useState(null);
   const [ws, setWs] = useState(null);
 
   useEffect(() => {
-    const socket = new WebSocket('ws://localhost:3001');
+    const socket = new WebSocket('ws://10.129.221.171:3001');
 
     socket.onopen = () => {
       console.log('Connected to server');
@@ -69,7 +75,7 @@ const Dashboard = () => {
     setStudents(prevStudents =>
       prevStudents.map(student =>
         student.id === studentId
-          ? { ...student, screenData }
+          ? { ...student, screenData, lastUpdate: Date.now() }
           : student
       )
     );
@@ -99,12 +105,28 @@ const Dashboard = () => {
     }
   };
 
+  const getStudentStatus = (student) => {
+    const lastUpdate = student.lastUpdate || 0;
+    const timeSinceUpdate = Date.now() - lastUpdate;
+    
+    if (timeSinceUpdate < 10000) { // Less than 10 seconds
+      return { color: 'success', text: 'Active' };
+    } else if (timeSinceUpdate < 30000) { // Less than 30 seconds
+      return { color: 'warning', text: 'Idle' };
+    } else {
+      return { color: 'error', text: 'Inactive' };
+    }
+  };
+
   return (
     <Box sx={{ flexGrow: 1 }}>
       <AppBar position="static">
         <Toolbar>
           <Typography variant="h6" sx={{ flexGrow: 1 }}>
             OpenClassroom Monitor
+          </Typography>
+          <Typography variant="subtitle1" sx={{ mr: 2 }}>
+            {students.length} Students Connected
           </Typography>
           <IconButton color="inherit" onClick={() => setMessageDialogOpen(true)}>
             <Message />
@@ -119,40 +141,78 @@ const Dashboard = () => {
       </AppBar>
 
       <Box sx={{ p: 3 }}>
-        <Grid container spacing={3}>
-          {students.map((student) => (
-            <Grid item xs={12} sm={6} md={4} key={student.id}>
-              <Card>
-                <CardContent>
-                  <Typography variant="h6" gutterBottom>
-                    {student.name}
-                  </Typography>
-                  <Box
+        <Grid container spacing={2}>
+          {students.map((student) => {
+            const status = getStudentStatus(student);
+            return (
+              <Grid item xs={12} sm={6} md={4} lg={3} key={student.id}>
+                <Card sx={{ position: 'relative' }}>
+                  <CardMedia
+                    component="div"
                     sx={{
-                      width: '100%',
-                      height: '200px',
-                      bgcolor: 'grey.200',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
+                      height: 180,
+                      backgroundColor: 'grey.200',
+                      position: 'relative',
+                      cursor: 'pointer'
                     }}
+                    onClick={() => setFullscreenView(student)}
                   >
                     {student.screenData ? (
                       <img
                         src={student.screenData}
                         alt="Student Screen"
-                        style={{ maxWidth: '100%', maxHeight: '100%' }}
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover'
+                        }}
                       />
                     ) : (
-                      <Typography color="text.secondary">
-                        Waiting for screen data...
+                      <Box
+                        sx={{
+                          height: '100%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <Computer sx={{ fontSize: 48, color: 'grey.400' }} />
+                      </Box>
+                    )}
+                    <IconButton
+                      sx={{
+                        position: 'absolute',
+                        right: 8,
+                        top: 8,
+                        backgroundColor: 'rgba(0,0,0,0.5)'
+                      }}
+                      onClick={() => setFullscreenView(student)}
+                    >
+                      <Fullscreen sx={{ color: 'white' }} />
+                    </IconButton>
+                  </CardMedia>
+                  <CardContent>
+                    <Stack direction="row" spacing={1} alignItems="center" mb={1}>
+                      <Typography variant="subtitle1" component="div" sx={{ flexGrow: 1 }}>
+                        {student.name}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        label={status.text}
+                        color={status.color}
+                        icon={status.color === 'success' ? <CheckCircle /> : <Warning />}
+                      />
+                    </Stack>
+                    {student.deviceInfo && (
+                      <Typography variant="body2" color="text.secondary">
+                        Device: {student.deviceInfo.deviceName}
                       </Typography>
                     )}
-                  </Box>
-                </CardContent>
-              </Card>
-            </Grid>
-          ))}
+                  </CardContent>
+                </Card>
+              </Grid>
+            );
+          })}
         </Grid>
       </Box>
 
@@ -181,6 +241,45 @@ const Dashboard = () => {
             Send
           </Button>
         </Box>
+      </Dialog>
+
+      <Dialog
+        fullScreen
+        open={Boolean(fullscreenView)}
+        onClose={() => setFullscreenView(null)}
+      >
+        <AppBar sx={{ position: 'relative' }}>
+          <Toolbar>
+            <Typography sx={{ flex: 1 }} variant="h6">
+              {fullscreenView?.name}'s Screen
+            </Typography>
+            <Button color="inherit" onClick={() => setFullscreenView(null)}>
+              Close
+            </Button>
+          </Toolbar>
+        </AppBar>
+        {fullscreenView?.screenData && (
+          <Box
+            sx={{
+              width: '100%',
+              height: 'calc(100vh - 64px)',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              bgcolor: 'black'
+            }}
+          >
+            <img
+              src={fullscreenView.screenData}
+              alt="Full Screen View"
+              style={{
+                maxWidth: '100%',
+                maxHeight: '100%',
+                objectFit: 'contain'
+              }}
+            />
+          </Box>
+        )}
       </Dialog>
     </Box>
   );

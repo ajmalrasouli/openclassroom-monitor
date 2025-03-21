@@ -3,11 +3,16 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
+const googleAdminService = require('./services/googleAdmin');
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*', // Allow all origins during testing
+  methods: ['GET', 'POST']
+}));
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -16,54 +21,113 @@ const wss = new WebSocket.Server({ server });
 // Store connected clients
 const clients = new Map();
 
-wss.on('connection', (ws, req) => {
-    console.log('New client connected');
-    
-    // Handle client identification
-    ws.on('message', (message) => {
-        const data = JSON.parse(message);
+// Test endpoint for Google Admin integration
+app.get('/api/test-admin', async (req, res) => {
+    try {
+        // Load credentials from the file specified in GOOGLE_APPLICATION_CREDENTIALS
+        const credentialsPath = path.join(__dirname, 'config', 'google-credentials.json');
+        console.log('Loading credentials from:', credentialsPath);
+        const credentials = require(credentialsPath);
         
-        switch(data.type) {
-            case 'IDENTIFY':
-                // Store client info (student or teacher)
-                clients.set(ws, {
-                    type: data.clientType,
-                    id: data.id,
-                    name: data.name
-                });
-                broadcastConnectedClients();
-                break;
-                
-            case 'SCREEN_DATA':
-                // Forward screen data to teacher
-                broadcastToTeachers({
-                    type: 'SCREEN_UPDATE',
-                    studentId: clients.get(ws).id,
-                    screenData: data.screenData
-                });
-                break;
-                
-            case 'MESSAGE':
-                // Handle messages between teacher and students
-                if (data.to === 'all') {
-                    broadcastToStudents(data);
-                } else {
-                    sendToSpecificClient(data.to, data);
-                }
-                break;
-                
-            case 'BLOCK_SITES':
-                // Broadcast blocked sites update to students
-                broadcastToStudents({
-                    type: 'UPDATE_BLOCKED_SITES',
-                    sites: data.sites
-                });
-                break;
+        // Initialize Google Admin service
+        await googleAdminService.initialize(credentials);
+        
+        // Try to fetch devices from the specified OU
+        const devices = await googleAdminService.getDevicesFromOU(process.env.ORG_UNIT_PATH);
+        
+        res.json({
+            success: true,
+            message: 'Google Admin integration test successful',
+            deviceCount: devices.length,
+            devices: devices
+        });
+    } catch (error) {
+        console.error('Google Admin test failed:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: error.stack
+        });
+    }
+});
+
+wss.on('connection', (ws, req) => {
+    console.log('New client connected from:', req.socket.remoteAddress);
+    
+    let clientId = null;
+    let clientType = null;
+
+    ws.on('message', async (message) => {
+        try {
+            const data = JSON.parse(message);
+            
+            switch(data.type) {
+                case 'IDENTIFY':
+                    clientId = data.id;
+                    clientType = data.clientType;
+                    clients.set(ws, {
+                        type: clientType,
+                        id: clientId,
+                        name: data.name,
+                        deviceInfo: data.deviceInfo
+                    });
+                    
+                    // If it's a student with device info, try to match with Google Admin
+                    if (clientType === 'student' && data.deviceInfo) {
+                        try {
+                            const deviceDetails = await googleAdminService.matchDeviceToStudent(data.deviceInfo.macAddress);
+                            if (deviceDetails) {
+                                clients.get(ws).deviceDetails = deviceDetails;
+                            }
+                        } catch (error) {
+                            console.error('Error matching device:', error);
+                        }
+                    }
+                    
+                    // Broadcast updated client list
+                    broadcastConnectedClients();
+                    break;
+                    
+                case 'SCREEN_DATA':
+                    if (clientId) {
+                        broadcastToTeachers({
+                            type: 'SCREEN_UPDATE',
+                            studentId: clients.get(ws).id,
+                            screenData: data.screenData
+                        });
+                    }
+                    break;
+                    
+                case 'BLOCK_SITES':
+                    broadcastToStudents({
+                        type: 'UPDATE_BLOCKED_SITES',
+                        sites: data.sites
+                    });
+                    break;
+                    
+                case 'MESSAGE':
+                    if (data.to === 'all') {
+                        broadcastToStudents({
+                            type: 'MESSAGE',
+                            from: clientId,
+                            content: data.content
+                        });
+                    } else {
+                        sendToSpecificClient(data.to, {
+                            type: 'MESSAGE',
+                            from: clientId,
+                            content: data.content
+                        });
+                    }
+                    break;
+            }
+        } catch (error) {
+            console.error('Error handling message:', error);
         }
     });
 
     ws.on('close', () => {
-        console.log('Client disconnected');
+        console.log('Client disconnected:', clients.get(ws)?.name);
         clients.delete(ws);
         broadcastConnectedClients();
     });
@@ -74,7 +138,9 @@ function broadcastConnectedClients() {
         .map(client => ({
             type: client.type,
             id: client.id,
-            name: client.name
+            name: client.name,
+            deviceInfo: client.deviceInfo,
+            deviceDetails: client.deviceDetails
         }));
         
     broadcast({
@@ -117,6 +183,7 @@ function broadcast(data) {
 }
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+const HOST = '0.0.0.0'; // Listen on all network interfaces
+server.listen(PORT, HOST, () => {
+    console.log(`Server running on http://${HOST}:${PORT}`);
 });
